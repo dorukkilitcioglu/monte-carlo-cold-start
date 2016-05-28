@@ -5,6 +5,9 @@ import io
 from sklearn.cross_validation import KFold
 from joblib import Parallel, delayed
 import multiprocessing
+import logging
+
+logging.basicConfig(filename='paper.log',level=logging.DEBUG)
 
 m = 6040 # users
 n = 3952 # movies
@@ -44,6 +47,7 @@ def walk(N, n_users, P_star, alpha = 0.9):
 				W[u, u_new] += 1 # Increment the total number of visits to u_new starting from u
 			cont = np.random.rand(users.shape[0]) > alpha # Finish runs with alpha probability
 			users = users[cont]
+		logging.info('Walk '+str(r)+' done')
 	return W / N # Calculate the average # of visits
 
 class Predicter:
@@ -61,7 +65,8 @@ class Predicter:
 		c_t -> similarity vector of t to all users
 		"""
 		U_oj = U_o(self.R, o_j)
-		return self.r_bar_v[u_t] - self.r_bar + (np.nansum(c_t[U_oj]*self.R[U_oj, o_j]) / np.nansum(c_t[U_oj]))
+		with np.errstate(divide = 'ignore', invalid = 'ignore'):
+			return self.r_bar_v[u_t] - self.r_bar + (np.nansum(c_t[U_oj]*self.R[U_oj, o_j]) / np.nansum(c_t[U_oj]))
 
 	def sim(self, u_i): # similarity matrix from u_k to o_j, given u_i
 		return MAXSCORE - np.absolute(self.R[u_i,:] - self.R)
@@ -81,7 +86,10 @@ class Predicter:
 		return np.nansum(self.P_uo[u_i] * self.P_ou(u_i), axis = 1)
 
 	def construct_P(self):
-		l = [self.p(u_i) for u_i in range(self.R.shape[0])]
+		l = []
+		for u_i in range(self.R.shape[0]):
+			l.append(self.p(u_i))
+			logging.info('P '+str(u_i)+' done')
 		return np.vstack(l)
 
 	def get_P(self):
@@ -116,23 +124,23 @@ class Predicter:
 			np.save(file_name, C)
 		return C
 
-	def mean_absolute_error(self, C, test_set, held_out):
+	def mean_absolute_error(self, R, C, test_set, held_out):
 		maes = np.zeros(test_set.shape[0])
 		for c_ind, u_i in enumerate(test_set):
-			print(np.sum(held_out[u_i]))
-			r_act = self.R[u_i, held_out[u_i]]
-			ojs = np.arange(held_out.shape[0])[held_out[u_i]]
+			r_act = R[u_i, held_out[u_i]]
+			ojs = np.arange(held_out.shape[1])[held_out[u_i]]
 			r_hat = np.array([self.calc_r_hat(u_i, o_j, C[c_ind]) for o_j in ojs])
 			maes[c_ind] = np.nanmean(np.absolute(r_act - r_hat))
+			logging.info('MAE '+str(c_ind)+' done')
 		return maes
 
-	def get_MAE(self, C, test_set, held_out):
+	def get_MAE(self, R, C, test_set, held_out):
 		MAE = None
 		file_name = 'MAE.npy' if self.ind is None else 'MAE'+str(self.ind)+'.npy'
 		try:
 			MAE = np.load(file_name)
 		except FileNotFoundError:
-			MAE = self.mean_absolute_error(C, test_set, held_out)
+			MAE = self.mean_absolute_error(R, C, test_set, held_out)
 			np.save(file_name, MAE)
 		return MAE
 
@@ -181,15 +189,16 @@ class Tester:
 		R_test[held_out] = np.nan
 		pred = Predicter(R_test, ind = i)
 		P = pred.get_P()
-			
+		print('P'+str(i)+' ready')
 		size_ts = test_set.shape[0]
 		P_new = front_swap(P, test_set, dim = 2)
 		P_star = P_new[size_ts:, size_ts:]
 		pi = P_new[:size_ts, size_ts:]
 		W = pred.get_W(m, m - size_ts, P_star, alpha = alpha)
-
+		print('W'+str(i)+' ready')
 		C = pred.get_C(W, pi, test_set, alpha)
-		MAE = pred.get_MAE(C, test_set, held_out)
+		MAE = pred.get_MAE(R, C, test_set, held_out)
+		print('MAE'+str(i)+' ready')
 		return MAE
 
 	def parallel_test(self, R, held_ratio = 0.9, alpha = 0.9):
@@ -204,9 +213,8 @@ class Tester:
 	def test(self, R, held_ratio = 0.9, alpha = 0.9):
 		test_sets = self.get_test_sets()
 		held_outs = self.get_held_outs(test_sets, R, held_ratio)
-		maes = [self.test_loop(R, i, test_set, held_out, held_ratio = held_ratio, alpha = alpha) \
-		for i, (test_set, held_out) in enumerate(zip(test_sets, held_outs))]
-		return maes
+		for i, (test_set, held_out) in enumerate(zip(test_sets, held_outs)):
+			self.test_loop(R, i, test_set, held_out, held_ratio = held_ratio, alpha = alpha)
 
 if __name__ == '__main__':
 	with np.errstate(divide='raise', invalid='raise'):
