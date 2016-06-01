@@ -47,7 +47,7 @@ def walk(N, n_users, P_star, alpha = 0.9):
 				W[u, u_new] += 1 # Increment the total number of visits to u_new starting from u
 			cont = np.random.rand(users.shape[0]) > alpha # Finish runs with alpha probability
 			users = users[cont]
-		logging.info('Walk '+str(r)+' done')
+		print('Walk '+str(r)+' done')
 	return W / N # Calculate the average # of visits
 
 class Predicter:
@@ -56,6 +56,9 @@ class Predicter:
 		self.ind = ind
 		self.r_bar_v = np.nanmean(self.R, axis = 1) # mean ratings of user u_i
 		self.r_bar = np.nanmean(self.R) # global mean rating
+		P_uo = R / np.nansum(R, axis = 1).reshape(R.shape[0],1)
+		P_uo[np.isnan(P_uo)]= 0
+		#self.P_uo = P_uo # Type 1 walk, user to movie
 		self.P_uo = (1 - np.isnan(self.R)) / np.sum(1 - np.isnan(self.R), axis = 1).reshape(self.R.shape[0],1) # Type 1 walk, user to movie
 
 	def calc_r_hat(self, u_t, o_j, c_t):
@@ -89,7 +92,7 @@ class Predicter:
 		l = []
 		for u_i in range(self.R.shape[0]):
 			l.append(self.p(u_i))
-			logging.info('P '+str(u_i)+' done')
+			print('P '+str(u_i)+' done')
 		return np.vstack(l)
 
 	def get_P(self):
@@ -112,14 +115,14 @@ class Predicter:
 			np.save(file_name, W)
 		return W
 
-	def get_C(self, W, pi, test_set, alpha):
+	def get_C(self, W, pi, pi_self, test_set, alpha):
 		C = None
 		file_name = 'C.npy' if self.ind is None else 'C'+str(self.ind)+'.npy'
 		try:
 			C = np.load(file_name)
 		except FileNotFoundError:
 			size_ts = test_set.shape[0]
-			C = np.vstack([front_swap(np.hstack((np.zeros(size_ts), alpha * np.sum(pi[k] * W.T, axis = 1))), \
+			C = np.vstack([front_swap(np.hstack((pi_self[k], alpha * np.sum(pi[k] * W.T, axis = 1))), \
 				test_set, dim = 1) for k in range(size_ts)])
 			np.save(file_name, C)
 		return C
@@ -127,11 +130,17 @@ class Predicter:
 	def mean_absolute_error(self, R, C, test_set, held_out):
 		maes = np.zeros(test_set.shape[0])
 		for c_ind, u_i in enumerate(test_set):
+			"""
 			r_act = R[u_i, held_out[u_i]]
 			ojs = np.arange(held_out.shape[1])[held_out[u_i]]
 			r_hat = np.array([self.calc_r_hat(u_i, o_j, C[c_ind]) for o_j in ojs])
 			maes[c_ind] = np.nanmean(np.absolute(r_act - r_hat))
-			logging.info('MAE '+str(c_ind)+' done')
+			"""
+			item_set = O_u(R, u_i)
+			r_act = R[u_i, item_set]
+			r_hat = np.array([self.calc_r_hat(u_i, o_j, C[c_ind]) for o_j in item_set[0]])
+			maes[c_ind] = np.nanmean(np.absolute(r_act - r_hat))
+			print('MAE '+str(c_ind)+' done')
 		return maes
 
 	def get_MAE(self, R, C, test_set, held_out):
@@ -193,10 +202,12 @@ class Tester:
 		size_ts = test_set.shape[0]
 		P_new = front_swap(P, test_set, dim = 2)
 		P_star = P_new[size_ts:, size_ts:]
+		pi_self = np.zeros((size_ts, size_ts))
+		pi_self[np.diag_indices(size_ts)] = np.diag(P_new[:size_ts, :size_ts])
 		pi = P_new[:size_ts, size_ts:]
 		W = pred.get_W(m, m - size_ts, P_star, alpha = alpha)
 		print('W'+str(i)+' ready')
-		C = pred.get_C(W, pi, test_set, alpha)
+		C = pred.get_C(W, pi, pi_self, test_set, alpha)
 		MAE = pred.get_MAE(R, C, test_set, held_out)
 		print('MAE'+str(i)+' ready')
 		return MAE
@@ -217,6 +228,9 @@ class Tester:
 			self.test_loop(R, i, test_set, held_out, held_ratio = held_ratio, alpha = alpha)
 
 if __name__ == '__main__':
+	#print(np.mean(np.load('MAE0.npy')))
+	#"""
 	with np.errstate(divide='raise', invalid='raise'):
 		t = Tester(4)
 		t.test(Rnan)
+	#"""
