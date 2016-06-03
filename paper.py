@@ -40,6 +40,8 @@ def walk(N, n_users, P_star, alpha = 0.9):
 	for r in range(N): # Do N runs for each training user
 		users = np.arange(n_users) # Create the currently running users
 		cur_users = np.copy(users) # The current user after starting from the running user itself.
+		cont = np.random.rand(users.shape[0]) > alpha # Finish runs with alpha probability
+		users = users[cont]
 		while users.shape[0] > 0: # While there are currently running users
 			for u in users: # Walk for each user
 				u_new = np.random.choice(n_users, 1, p = norm_P_star[cur_users[u], :])[0] # Jump to a new user
@@ -51,15 +53,17 @@ def walk(N, n_users, P_star, alpha = 0.9):
 	return W / N # Calculate the average # of visits
 
 class Predicter:
-	def __init__(self, R, ind = None):
+	def __init__(self, R, ind = None, alternative = False):
 		self.R = R
 		self.ind = ind
 		self.r_bar_v = np.nanmean(self.R, axis = 1) # mean ratings of user u_i
 		self.r_bar = np.nanmean(self.R) # global mean rating
-		P_uo = R / np.nansum(R, axis = 1).reshape(R.shape[0],1)
-		P_uo[np.isnan(P_uo)]= 0
-		#self.P_uo = P_uo # Type 1 walk, user to movie
-		self.P_uo = (1 - np.isnan(self.R)) / np.sum(1 - np.isnan(self.R), axis = 1).reshape(self.R.shape[0],1) # Type 1 walk, user to movie
+		if alternative: # use our proposed method
+			rl1 = np.log(R)+1
+			self.P_uo = rl1 / np.nansum(rl1, axis = 1).reshape(R.shape[0],1)
+			self.P_uo[np.isnan(self.P_uo)]= 0 # Type 1 walk, user to movie
+		else:
+			self.P_uo = (1 - np.isnan(self.R)) / np.sum(1 - np.isnan(self.R), axis = 1).reshape(self.R.shape[0],1) # Type 1 walk, user to movie
 
 	def calc_r_hat(self, u_t, o_j, c_t):
 		"""
@@ -88,21 +92,31 @@ class Predicter:
 		""" Transition probability from user u_i to each user. """
 		return np.nansum(self.P_uo[u_i] * self.P_ou(u_i), axis = 1)
 
-	def construct_P(self):
-		l = []
-		for u_i in range(self.R.shape[0]):
-			l.append(self.p(u_i))
+	def construct_P(self, filename):
+		P = np.zeros((m,m))
+		start = 0
+		try:
+			s = np.load(filename)
+			start = s.shape[0]
+			P[:start,:] = s
+		except FileNotFoundError:
+			pass
+		for u_i in range(m)[start:]:
+			P[u_i,:] = self.p(u_i)
 			print('P '+str(u_i)+' done')
-		return np.vstack(l)
+			if u_i % 100 == 0:
+				np.save(filename, P[:u_i+1,:])
+		return P
 
 	def get_P(self):
 		P = None
 		file_name = 'P.npy' if self.ind is None else 'P'+str(self.ind)+'.npy'
 		try:
 			P = np.load(file_name)
+			if P.shape[0] != m:
+				P = self.construct_P(file_name)
 		except FileNotFoundError:
-			P = self.construct_P()
-			np.save(file_name, P)
+			P = self.construct_P(file_name)
 		return P
 
 	def get_W(self, N, n_users, P_star, alpha = 0.9):
@@ -138,7 +152,7 @@ class Predicter:
 			"""
 			item_set = O_u(R, u_i)
 			r_act = R[u_i, item_set]
-			r_hat = np.array([self.calc_r_hat(u_i, o_j, C[c_ind]) for o_j in item_set[0]])
+			r_hat = np.round(np.array([self.calc_r_hat(u_i, o_j, C[c_ind]) for o_j in item_set[0]]))
 			maes[c_ind] = np.nanmean(np.absolute(r_act - r_hat))
 			print('MAE '+str(c_ind)+' done')
 		return maes
@@ -228,9 +242,6 @@ class Tester:
 			self.test_loop(R, i, test_set, held_out, held_ratio = held_ratio, alpha = alpha)
 
 if __name__ == '__main__':
-	#print(np.mean(np.load('MAE0.npy')))
-	#"""
 	with np.errstate(divide='raise', invalid='raise'):
 		t = Tester(4)
 		t.test(Rnan)
-	#"""
